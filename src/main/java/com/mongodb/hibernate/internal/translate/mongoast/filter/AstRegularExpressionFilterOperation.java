@@ -43,7 +43,7 @@ public record AstRegularExpressionFilterOperation(String pattern, String options
         }
 
         result.append("\\Q");
-        text.codePoints().forEach(new IntConsumer() {
+        final var consumer = new IntConsumer() {
             boolean seenSlash;
 
             @Override
@@ -64,7 +64,11 @@ public record AstRegularExpressionFilterOperation(String pattern, String options
                     result.appendCodePoint(c);
                 }
             }
-        });
+        };
+        text.codePoints().forEach(consumer);
+        if (consumer.seenSlash) {
+            result.append("\\");
+        }
         result.append("\\E");
     }
 
