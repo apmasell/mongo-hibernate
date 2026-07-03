@@ -52,7 +52,7 @@ class RegularExpressionIntegrationTests extends AbstractQueryIntegrationTests {
     void testLikeMatchesNegated(String options) {
         runBasicNegatedTest(
                 "from Item where str not %slike '%%ab%% .'".formatted(options),
-                "/^.*\\Qab\\E.*\\Q .\\E$/" + options,
+                "/^.*ab.*\\ \\.$/" + options,
                 options.equals("i") ? List.of(ITEM3) : List.of(ITEM2, ITEM3));
     }
 
@@ -61,7 +61,7 @@ class RegularExpressionIntegrationTests extends AbstractQueryIntegrationTests {
     void testLikeMatches(String options) {
         runBasicTest(
                 "from Item where str %slike '%%ab%% .'".formatted(options),
-                "/^.*\\Qab\\E.*\\Q .\\E$/" + options,
+                "/^.*ab.*\\ \\.$/" + options,
                 options.equals("i") ? List.of(ITEM1, ITEM2) : List.of(ITEM1));
     }
 
@@ -70,7 +70,7 @@ class RegularExpressionIntegrationTests extends AbstractQueryIntegrationTests {
     void testLikeMatchSingle(String options) {
         runBasicTest(
                 "from Item where str %slike 'a_ .'".formatted(options),
-                "/^\\Qa\\E.\\Q .\\E$/" + options,
+                "/^a.\\ \\.$/" + options,
                 options.equals("i") ? List.of(ITEM1, ITEM2) : List.of(ITEM1));
     }
 
@@ -79,7 +79,7 @@ class RegularExpressionIntegrationTests extends AbstractQueryIntegrationTests {
     void testLikeMatchSingleNegated(String options) {
         runBasicNegatedTest(
                 "from Item where str not %slike 'a_ .'".formatted(options),
-                "/^\\Qa\\E.\\Q .\\E$/" + options,
+                "/^a.\\ \\.$/" + options,
                 options.equals("i") ? List.of(ITEM3) : List.of(ITEM2, ITEM3));
     }
 
@@ -88,7 +88,7 @@ class RegularExpressionIntegrationTests extends AbstractQueryIntegrationTests {
     void testLikeMatchesWithEscape(String options) {
         runBasicTest(
                 "from Item where str %slike '*ab* .' escape '*'".formatted(options),
-                "/^.*\\Qab\\E.*\\Q .\\E$/" + options,
+                "/^.*ab.*\\ \\.$/" + options,
                 options.equals("i") ? List.of(ITEM1, ITEM2) : List.of(ITEM1));
     }
 

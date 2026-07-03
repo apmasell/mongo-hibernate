@@ -16,7 +16,6 @@
 
 package com.mongodb.hibernate.internal.translate.mongoast.filter;
 
-import java.util.function.IntConsumer;
 import org.bson.BsonRegularExpression;
 import org.bson.BsonWriter;
 
@@ -31,45 +30,26 @@ public record AstRegularExpressionFilterOperation(String pattern, String options
     /**
      * Escapes a string in a way that is compatible with the server PCRE-implementation.
      *
-     * <p>This is a reimplementation of {@link java.util.regex.Pattern#quote(String)} that append to a string builder
+     * <p>Rather than fencing the text in {@code \Q...\E} like {@link java.util.regex.Pattern#quote(String)}, this
+     * backslash-escapes each metacharacter individually and appends to a string builder.
      *
      * @param text the text to convert to an exact-match equivalent regular expression
      * @param result a string builder that will hold the regular expression that matches the supplied text
      */
     public static void quoteMeta(CharSequence text, StringBuilder result) {
-
-        if (text.isEmpty()) {
-            return;
-        }
-
-        result.append("\\Q");
-        final var consumer = new IntConsumer() {
-            boolean seenSlash;
-
-            @Override
-            public void accept(int c) {
-                if (seenSlash && c == 'E') {
-                    result.append("\\E\\\\E\\Q");
-                    seenSlash = false;
-                } else if (c == '\\') {
-                    if (seenSlash) {
-                        result.append("\\");
-                    }
-                    seenSlash = true;
-                } else {
-                    if (seenSlash) {
-                        result.append("\\");
-                        seenSlash = false;
-                    }
-                    result.appendCodePoint(c);
-                }
+        text.codePoints().forEach(c -> {
+            if (isMetacharacter(c)) {
+                result.append('\\');
             }
-        };
-        text.codePoints().forEach(consumer);
-        if (consumer.seenSlash) {
-            result.append("\\");
-        }
-        result.append("\\E");
+            result.appendCodePoint(c);
+        });
+    }
+
+    private static boolean isMetacharacter(int c) {
+        // Escape every non-word ASCII character. This covers all PCRE metacharacters (including the backslash
+        // itself) without needing to enumerate them; over-escaping an ASCII character that is not actually a
+        // metacharacter is harmless in PCRE.
+        return c < 0x80 && !Character.isLetterOrDigit(c) && c != '_';
     }
 
     @Override
