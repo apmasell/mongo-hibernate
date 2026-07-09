@@ -62,6 +62,7 @@ import com.mongodb.hibernate.internal.translate.mongoast.AstFieldUpdate;
 import com.mongodb.hibernate.internal.translate.mongoast.AstLiteral;
 import com.mongodb.hibernate.internal.translate.mongoast.AstNode;
 import com.mongodb.hibernate.internal.translate.mongoast.AstParameterMarker;
+import com.mongodb.hibernate.internal.translate.mongoast.AstValue;
 import com.mongodb.hibernate.internal.translate.mongoast.command.AstDeleteCommand;
 import com.mongodb.hibernate.internal.translate.mongoast.command.AstInsertCommand;
 import com.mongodb.hibernate.internal.translate.mongoast.command.AstUpdateCommand;
@@ -226,14 +227,25 @@ import org.jspecify.annotations.Nullable;
  */
 @SuppressWarnings("MissingSummary")
 public abstract class AbstractMqlTranslator<T extends JdbcOperation> implements SqlAstTranslator<T> {
-
+    static final MqlTranslator<SqlAstNode, AbstractMqlTranslator<?>, Object> SQL =
+            new MqlTranslator<SqlAstNode, AbstractMqlTranslator<?>, Object>() {
+                @Override
+                public TranslationResult<Object> translate(SqlAstNode input, AbstractMqlTranslator<?> translator) {
+                    try {
+                        input.accept(translator);
+                        return translator.output;
+                    } finally {
+                        translator.output = MqlTranslator.UNINITIALIZED;
+                    }
+                }
+            };
     // '#' is blocked in mapped field names, so prefixing join aliases with it prevents $lookup from shadowing
     // a local field that happens to share the Hibernate-generated alias name (e.g. "o1_0").
     private static final String JOIN_ALIAS_PREFIX = "#";
 
     private final SessionFactoryImplementor sessionFactory;
 
-    private final AstVisitorValueHolder astVisitorValueHolder = new AstVisitorValueHolder();
+    private MqlTranslator.TranslationResult<Object> output = MqlTranslator.UNINITIALIZED;
 
     private @Nullable String elemMatchInnerAlias;
 
@@ -1049,21 +1061,39 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> implements 
         throw new FeatureNotSupportedException();
     }
 
+    <I> void transform(I input, MqlTranslator<I, AbstractMqlTranslator<?>, ?> translator) {
+        output = translator.translate(input, this).relax();
+    }
+
+    private static final MqlTranslator<InListPredicate, AbstractMqlTranslator<?>, AstFieldOperationFilter>
+            IN_LIST_PREDICATE =
+                    new MqlTranslator.Merge2<>(
+                            SQL.into(MqlTranslator.FIELD_NAME).from(InListPredicate::getTestExpression),
+                            "test",
+                            SQL.into(MqlTranslator.VALUE).asList().from(InListPredicate::getListExpressions),
+                            "list") {
+                        @Override
+                        protected String infix(InListPredicate input) {
+                            return input.isNegated() ? "not in" : "in";
+                        }
+
+                        @Override
+                        protected AstFieldOperationFilter merge(
+                                InListPredicate input, String fieldPath, List<AstValue> operation) {
+                            return new AstFieldOperationFilter(
+                                    fieldPath,
+                                    new AstListComparisonFilterOperation(input.isNegated() ? NIN : IN, operation));
+                        }
+
+                        @Override
+                        protected String shape(InListPredicate input) {
+                            return input.isNegated() ? "not in list predicate" : "in list predicate";
+                        }
+                    };
+
     @Override
     public void visitInListPredicate(InListPredicate inListPredicate) {
-        var expression = inListPredicate.getTestExpression();
-        if (!isFieldPathExpression(expression)) {
-            throw new FeatureNotSupportedException(
-                    "Only the following list predicates are supported: field in [not] (...)");
-        }
-        var fieldPath = acceptAndYield(expression, FIELD_PATH);
-        var operator = inListPredicate.isNegated() ? NIN : IN;
-        var operation = new AstListComparisonFilterOperation(
-                operator,
-                inListPredicate.getListExpressions().stream()
-                        .map(item -> acceptAndYield(item, VALUE))
-                        .toList());
-        astVisitorValueHolder.yield(FILTER, new AstFieldOperationFilter(fieldPath, operation));
+        transform(inListPredicate, IN_LIST_PREDICATE);
     }
 
     @Override
