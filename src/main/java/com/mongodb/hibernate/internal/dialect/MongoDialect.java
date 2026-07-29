@@ -17,18 +17,22 @@
 package com.mongodb.hibernate.internal.dialect;
 
 import static com.mongodb.hibernate.internal.MongoConstants.MONGO_DBMS_NAME;
+import static com.mongodb.hibernate.internal.dialect.function.FunctionParameterDefinition.durationUnit;
 import static com.mongodb.hibernate.internal.dialect.function.FunctionParameterDefinition.orMissing;
 import static com.mongodb.hibernate.internal.dialect.function.FunctionParameterDefinition.required;
 import static com.mongodb.hibernate.internal.dialect.function.MongoExpressionPositionalFunction.swap;
+import static com.mongodb.hibernate.internal.dialect.function.MongoExtractFunction.truncateToTime;
 import static java.lang.String.format;
 
 import com.mongodb.hibernate.internal.FeatureNotSupportedException;
 import com.mongodb.hibernate.internal.MongoConstants;
 import com.mongodb.hibernate.internal.dialect.function.FunctionParameterDefinition;
 import com.mongodb.hibernate.internal.dialect.function.MongoExpressionNamedFunction;
+import com.mongodb.hibernate.internal.dialect.function.MongoExpressionNoArgumentFunction;
 import com.mongodb.hibernate.internal.dialect.function.MongoExpressionPositionalFunction;
 import com.mongodb.hibernate.internal.dialect.function.MongoExpressionUnaryFunction;
 import com.mongodb.hibernate.internal.dialect.function.MongoExpressionVariadicFunction;
+import com.mongodb.hibernate.internal.dialect.function.MongoExtractFunction;
 import com.mongodb.hibernate.internal.dialect.function.MongoPadFunction;
 import com.mongodb.hibernate.internal.dialect.function.MongoRepeatFunction;
 import com.mongodb.hibernate.internal.dialect.function.MongoSubstringFunction;
@@ -38,7 +42,11 @@ import com.mongodb.hibernate.internal.dialect.function.array.MongoArrayContainsF
 import com.mongodb.hibernate.internal.dialect.function.array.MongoArrayIncludesFunction;
 import com.mongodb.hibernate.internal.dialect.function.array.MongoUnnestFunction;
 import com.mongodb.hibernate.internal.translate.MongoTranslatorFactory;
+import com.mongodb.hibernate.internal.translate.mongoast.AstLiteral;
+import com.mongodb.hibernate.internal.translate.mongoast.AstLiteralExpression;
+import com.mongodb.hibernate.internal.translate.mongoast.AstNamedOperatorExpression;
 import com.mongodb.hibernate.internal.translate.mongoast.AstUnaryOperatorExpression;
+import com.mongodb.hibernate.internal.translate.mongoast.AstVariableExpression;
 import com.mongodb.hibernate.internal.type.MongoArrayJdbcType;
 import com.mongodb.hibernate.internal.type.MongoStructJdbcType;
 import com.mongodb.hibernate.internal.type.ObjectIdJavaType;
@@ -49,6 +57,8 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.Calendar;
 import java.util.Collection;
+import java.util.Map;
+import java.util.TreeMap;
 import java.util.function.Function;
 import java.util.stream.Stream;
 import org.bson.BsonDocument;
@@ -324,6 +334,40 @@ public sealed class MongoDialect extends Dialect permits TestMongoDialect {
                         FunctionParameterType.ANY,
                         input -> new AstUnaryOperatorExpression("$toString", input)));
         functionRegistry.register(
+                "current_date",
+                new MongoExpressionNoArgumentFunction(
+                        "current_date",
+                        typeConfiguration,
+                        StandardBasicTypes.INSTANT,
+                        new AstNamedOperatorExpression(
+                                "$dateTrunc",
+                                new TreeMap<>(Map.of(
+                                        "date",
+                                        new AstVariableExpression("NOW"),
+                                        "unit",
+                                        new AstLiteralExpression(new AstLiteral(new BsonString("day"))))))));
+        functionRegistry.register(
+                "current_time",
+                new MongoExpressionNoArgumentFunction(
+                        "current_time",
+                        typeConfiguration,
+                        StandardBasicTypes.INSTANT,
+                        truncateToTime(new AstVariableExpression("NOW"))));
+        functionRegistry.register(
+                "current_timestamp",
+                MongoExpressionNoArgumentFunction.forServerVariable(
+                        "current_timestamp", typeConfiguration, StandardBasicTypes.INSTANT, "NOW"));
+        functionRegistry.register("extract", new MongoExtractFunction(typeConfiguration));
+        functionRegistry.register(
+                "format",
+                new MongoExpressionNamedFunction(
+                        "format",
+                        "$dateToString",
+                        typeConfiguration,
+                        StandardBasicTypes.STRING,
+                        required("date", FunctionParameterType.TEMPORAL),
+                        required("format", FunctionParameterType.STRING)));
+        functionRegistry.register(
                 "locate",
                 new MongoExpressionPositionalFunction(
                         "locate",
@@ -359,6 +403,27 @@ public sealed class MongoDialect extends Dialect permits TestMongoDialect {
                         required("replacement", FunctionParameterType.STRING)));
         functionRegistry.register("rpad", new MongoPadFunction(typeConfiguration, false));
         functionRegistry.register("substring", new MongoSubstringFunction(typeConfiguration));
+        functionRegistry.register(
+                "timestampadd",
+                new MongoExpressionNamedFunction(
+                        "timestampadd",
+                        "$dateAdd",
+                        typeConfiguration,
+                        StandardBasicTypes.INTEGER,
+                        durationUnit(),
+                        required("startDate", FunctionParameterType.TEMPORAL),
+                        required("amount", FunctionParameterType.TEMPORAL)));
+        functionRegistry.register(
+                "timestampdiff",
+                new MongoExpressionNamedFunction(
+                        "timestampdiff",
+                        "$dateDiff",
+                        typeConfiguration,
+                        StandardBasicTypes.LONG,
+                        durationUnit(),
+                        required("startDate", FunctionParameterType.TEMPORAL),
+                        required("endDate", FunctionParameterType.TEMPORAL)));
+
         functionRegistry.register("trim", new MongoTrimFunction(typeConfiguration));
         functionRegistry.register("unnest", new MongoUnnestFunction());
         functionRegistry.register(
@@ -370,6 +435,7 @@ public sealed class MongoDialect extends Dialect permits TestMongoDialect {
                         StandardBasicTypes.STRING,
                         FunctionParameterType.STRING));
         functionRegistry.registerAlternateKey("char_length", "character_length");
+        functionRegistry.registerAlternateKey("current_instant", "current_timestamp");
         functionRegistry.registerAlternateKey("length", "character_length");
     }
 

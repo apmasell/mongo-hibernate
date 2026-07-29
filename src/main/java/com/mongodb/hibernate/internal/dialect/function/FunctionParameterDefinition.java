@@ -18,6 +18,7 @@ package com.mongodb.hibernate.internal.dialect.function;
 
 import static com.mongodb.hibernate.internal.translate.AstVisitorValueDescriptor.EXPRESSION;
 
+import com.mongodb.hibernate.internal.FeatureNotSupportedException;
 import com.mongodb.hibernate.internal.MongoAssertions;
 import com.mongodb.hibernate.internal.translate.AbstractMqlTranslator;
 import com.mongodb.hibernate.internal.translate.mongoast.AstArithmeticExpressionOperator;
@@ -28,6 +29,7 @@ import com.mongodb.hibernate.internal.translate.mongoast.AstLetBindingExpression
 import com.mongodb.hibernate.internal.translate.mongoast.AstLiteral;
 import com.mongodb.hibernate.internal.translate.mongoast.AstLiteralExpression;
 import com.mongodb.hibernate.internal.translate.mongoast.AstPositionalOperatorExpression;
+import com.mongodb.hibernate.internal.translate.mongoast.AstUnaryOperatorExpression;
 import com.mongodb.hibernate.internal.translate.mongoast.AstVariableExpression;
 import java.util.List;
 import java.util.Map;
@@ -36,6 +38,7 @@ import java.util.TreeMap;
 import java.util.function.Function;
 import java.util.stream.Stream;
 import org.bson.BsonInt32;
+import org.bson.BsonString;
 import org.bson.BsonValue;
 import org.hibernate.query.sqm.produce.function.ArgumentTypesValidator;
 import org.hibernate.query.sqm.produce.function.ArgumentsValidator;
@@ -45,6 +48,7 @@ import org.hibernate.query.sqm.produce.function.StandardArgumentsValidators;
 import org.hibernate.query.sqm.produce.function.StandardFunctionArgumentTypeResolvers;
 import org.hibernate.sql.ast.SqlAstTranslator;
 import org.hibernate.sql.ast.tree.SqlAstNode;
+import org.hibernate.sql.ast.tree.expression.DurationUnit;
 import org.hibernate.type.spi.TypeConfiguration;
 
 /**
@@ -57,6 +61,7 @@ public abstract sealed class FunctionParameterDefinition<N>
         permits FunctionParameterDefinition.Default,
                 FunctionParameterDefinition.Mapped,
                 FunctionParameterDefinition.Missing,
+                FunctionParameterDefinition.Raw,
                 FunctionParameterDefinition.Required {
     /**
      * Utility function that transforms an operation into one that returns one more than its original output
@@ -71,6 +76,50 @@ public abstract sealed class FunctionParameterDefinition<N>
         return new AstBinaryOperatorExpression(
                 AstArithmeticExpressionOperator.ADD, input, new AstLiteralExpression(new AstLiteral(new BsonInt32(1))));
     }
+
+    public static FunctionParameterDefinition<String> durationUnit() {
+        // TemporalUnits defines time units which are not durations and not listed in the Hibernate grammar. nanosecond
+        // and epoch are the only expressible durations that are unsupported.
+        return new Raw<>(
+                "unit",
+                FunctionParameterType.TEMPORAL_UNIT,
+                node -> new AstLiteralExpression(new AstLiteral(new BsonString(
+                        switch (((DurationUnit) node).getUnit()) {
+                            case YEAR -> "year";
+                            case QUARTER -> "quarter";
+                            case MONTH -> "month";
+                            case WEEK -> "week";
+                            case DAY -> "day";
+                            case HOUR -> "hour";
+                            case MINUTE -> "minute";
+                            case SECOND -> "second";
+                            default -> throw new FeatureNotSupportedException("Unsupported temporal unit");
+                        }))));
+    }
+    /**
+     * Utility function that divides a value and applies another operation after
+     *
+     * @param input the value to divide
+     * @param divisor the divisor to use in the calculation
+     * @param operator the operator to apply after division (typically, <code>$floor</code> or <code>$ceil</code>
+     * @return a function that will apply the additional operations to the tree provided
+     */
+    public static AstExpression divideAndSomethingAsType(
+            AstExpression input, int divisor, String operator, String typeConversion) {
+        return new AstUnaryOperatorExpression(
+                typeConversion,
+                new AstUnaryOperatorExpression(
+                        operator,
+                        new AstBinaryOperatorExpression(
+                                AstArithmeticExpressionOperator.DIVIDE,
+                                input,
+                                new AstLiteralExpression(new AstLiteral(new BsonInt32(divisor))))));
+    }
+
+    public static AstExpression divideAndSomethingAsInt(AstExpression input, int divisor, String operator) {
+        return divideAndSomethingAsType(input, divisor, operator, "$toInt");
+    }
+
     /**
      * Utility function that transforms an operation into one that returns one less than its original output
      *
@@ -130,7 +179,7 @@ public abstract sealed class FunctionParameterDefinition<N>
      *
      * @param type the type of the parameter
      * @return a parameter definition
-     * @see MongoExpressionNamedFunction
+     * @see MongoExpressionPositionalFunction
      */
     @SuppressWarnings("NullAway")
     public static FunctionParameterDefinition<Void> orMissing(FunctionParameterType type) {
@@ -180,9 +229,7 @@ public abstract sealed class FunctionParameterDefinition<N>
         for (var index = 0; index < parameters.length; index++) {
             var parameter = parameters[index];
             if (index < arguments.size()) {
-                collector.append(
-                        parameter.name(),
-                        parameter.asNode(translator.acceptAndYield(arguments.get(index), EXPRESSION)));
+                collector.append(parameter.name(), parameter.asNode(translator, arguments.get(index)));
             } else {
                 parameter.asNode().ifPresent(expression -> collector.append(parameter.name(), expression));
             }
@@ -195,7 +242,9 @@ public abstract sealed class FunctionParameterDefinition<N>
 
     abstract Optional<AstExpression> asNode();
 
-    abstract AstExpression asNode(AstExpression expression);
+    AstExpression asNode(AbstractMqlTranslator<?> translator, SqlAstNode argument) {
+        return translator.acceptAndYield(argument, EXPRESSION);
+    }
 
     abstract void check(RelativePositionChecker position);
 
@@ -353,11 +402,6 @@ public abstract sealed class FunctionParameterDefinition<N>
         }
 
         @Override
-        AstExpression asNode(AstExpression expression) {
-            return expression;
-        }
-
-        @Override
         void check(RelativePositionChecker position) {
             position.incrementDefault();
         }
@@ -388,11 +432,6 @@ public abstract sealed class FunctionParameterDefinition<N>
         @Override
         Optional<AstExpression> asNode() {
             throw new IllegalStateException("Hibernate did not supply required value");
-        }
-
-        @Override
-        AstExpression asNode(AstExpression expression) {
-            return expression;
         }
 
         @Override
@@ -427,8 +466,8 @@ public abstract sealed class FunctionParameterDefinition<N>
         }
 
         @Override
-        AstExpression asNode(AstExpression expression) {
-            return mapper.apply(inner.asNode(expression));
+        AstExpression asNode(AbstractMqlTranslator<?> translator, SqlAstNode expression) {
+            return mapper.apply(inner.asNode(translator, expression));
         }
 
         @Override
@@ -462,13 +501,45 @@ public abstract sealed class FunctionParameterDefinition<N>
         }
 
         @Override
-        AstExpression asNode(AstExpression expression) {
-            return expression;
+        void check(RelativePositionChecker position) {
+            position.incrementMissing();
+        }
+    }
+
+    static final class Raw<N> extends FunctionParameterDefinition<N> {
+        private final N name;
+        private final Function<? super SqlAstNode, ? extends AstExpression> mapper;
+        private final FunctionParameterType type;
+
+        public Raw(N name, FunctionParameterType type, Function<? super SqlAstNode, ? extends AstExpression> mapper) {
+            this.name = name;
+            this.type = type;
+            this.mapper = mapper;
+        }
+
+        @Override
+        N name() {
+            return name;
+        }
+
+        @Override
+        FunctionParameterType type() {
+            return type;
+        }
+
+        @Override
+        Optional<AstExpression> asNode() {
+            return Optional.empty();
+        }
+
+        @Override
+        AstExpression asNode(AbstractMqlTranslator<?> translator, SqlAstNode argument) {
+            return mapper.apply(argument);
         }
 
         @Override
         void check(RelativePositionChecker position) {
-            position.incrementMissing();
+            position.incrementRequired();
         }
     }
 }

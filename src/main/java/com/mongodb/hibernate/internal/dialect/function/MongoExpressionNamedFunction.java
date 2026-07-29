@@ -20,11 +20,15 @@ import static com.mongodb.hibernate.internal.translate.AstVisitorValueDescriptor
 
 import com.mongodb.hibernate.internal.translate.AbstractMqlTranslator;
 import com.mongodb.hibernate.internal.translate.mongoast.AstExpression;
+import com.mongodb.hibernate.internal.translate.mongoast.AstLiteral;
+import com.mongodb.hibernate.internal.translate.mongoast.AstLiteralExpression;
 import com.mongodb.hibernate.internal.translate.mongoast.AstNamedOperatorExpression;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
 import java.util.function.Function;
+import org.bson.BsonValue;
 import org.hibernate.metamodel.model.domain.ReturnableType;
 import org.hibernate.query.sqm.function.AbstractSqmSelfRenderingFunctionDescriptor;
 import org.hibernate.query.sqm.produce.function.StandardFunctionReturnTypeResolvers;
@@ -41,6 +45,7 @@ public final class MongoExpressionNamedFunction extends AbstractSqmSelfRendering
     private final String mongoOperator;
     private final FunctionParameterDefinition<String>[] parameters;
     private final Function<? super AstExpression, ? extends AstExpression> outputMapper;
+    private final Map<String, BsonValue> fixedArguments;
 
     /**
      * Create a new function definition
@@ -59,7 +64,7 @@ public final class MongoExpressionNamedFunction extends AbstractSqmSelfRendering
             TypeConfiguration typeConfiguration,
             BasicTypeReference<?> returnType,
             FunctionParameterDefinition<String>... parameters) {
-        this(hqlName, mongoOperator, typeConfiguration, returnType, Function.identity(), parameters);
+        this(hqlName, mongoOperator, Map.of(), typeConfiguration, returnType, Function.identity(), parameters);
     }
 
     /**
@@ -67,6 +72,7 @@ public final class MongoExpressionNamedFunction extends AbstractSqmSelfRendering
      *
      * @param hqlName the name for the function in HQL
      * @param mongoOperator the operator in Mongo, including the leading <code>$</code>
+     * @param fixedArguments arguments that should always be supplied
      * @param typeConfiguration the type information of the Hibernate context
      * @param returnType the type that this function will return
      * @param outputMapper allows wrapping the generated output with additional operations
@@ -80,6 +86,7 @@ public final class MongoExpressionNamedFunction extends AbstractSqmSelfRendering
     public MongoExpressionNamedFunction(
             String hqlName,
             String mongoOperator,
+            Map<String, BsonValue> fixedArguments,
             TypeConfiguration typeConfiguration,
             BasicTypeReference<?> returnType,
             Function<? super AstExpression, ? extends AstExpression> outputMapper,
@@ -92,6 +99,7 @@ public final class MongoExpressionNamedFunction extends AbstractSqmSelfRendering
                         typeConfiguration.getBasicTypeRegistry().resolve(returnType))),
                 FunctionParameterDefinition.typeResolverFromParameters(typeConfiguration, parameters));
         this.mongoOperator = mongoOperator;
+        this.fixedArguments = fixedArguments;
         this.outputMapper = outputMapper;
         this.parameters = parameters;
     }
@@ -105,6 +113,9 @@ public final class MongoExpressionNamedFunction extends AbstractSqmSelfRendering
         var translator = AbstractMqlTranslator.cast(walker);
         var namedArguments = new TreeMap<String, AstExpression>();
         FunctionParameterDefinition.processArguments(parameters, arguments, walker, namedArguments::put);
+        for (var entry : fixedArguments.entrySet()) {
+            namedArguments.put(entry.getKey(), new AstLiteralExpression(new AstLiteral(entry.getValue())));
+        }
         translator.yield(EXPRESSION, outputMapper.apply(new AstNamedOperatorExpression(mongoOperator, namedArguments)));
     }
 }
